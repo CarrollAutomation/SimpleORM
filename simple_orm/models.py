@@ -16,9 +16,10 @@ class ColumnType:
 
 
 class ForeignKey:
-    def __init__(self, table, col):
-        self.table = table
+    def __init__(self, col, obj_class):
         self.column = col
+        self.obj_class = obj_class
+        self.table = obj_class.__name__
 
 
 class DBVariable:
@@ -52,7 +53,7 @@ class Table:
             self.unique += f", UNIQUE{str(tuple(cols))}"
 
     def _assemble_statement(self):
-        statement = f"CREATE TABLE {self.name}("
+        statement = f"CREATE TABLE IF NOT EXISTS {self.name}("
         foreign_keys = ""
         for i in range(len(self.columns)):
             col = self.columns[i]
@@ -132,18 +133,22 @@ class DBQuery:
 
     def execute_query(self, statement, args=None):
         self._connect_db()
-        print(f"DEBUG EXECUTING STATEMENT: {statement} WITH ARGS {args}")
-        if args is None:
-            logger.debug(f"Executing Statement: {statement}:")
-            sql_res = self.cur.execute(statement).fetchall()
-        else:
-            logger.debug(f"Executing Statement: {statement} with args {args}:")
-            sql_res = self.cur.execute(statement, args).fetchall()
-        resp = []
-        for row in sql_res:
-            resp.append({key: row[key] for key in row.keys()})
-        self.con.commit()
-        _disconnect_db(self.con, self.cur)
+        try:
+            print(f"DEBUG EXECUTING STATEMENT: {statement} WITH ARGS {args}")
+            if args is None:
+                logger.debug(f"Executing Statement: {statement}:")
+                sql_res = self.cur.execute(statement).fetchall()
+            else:
+                logger.debug(f"Executing Statement: {statement} with args {args}:")
+                sql_res = self.cur.execute(statement, args).fetchall()
+            resp = []
+            for row in sql_res:
+                resp.append({key: row[key] for key in row.keys()})
+            self.con.commit()
+        except Exception as e:
+            raise e
+        finally:
+            _disconnect_db(self.con, self.cur)
         return resp  # Dictionary assembled response
 
     def raw_query(self, statement, args, suppress_warning=False):
@@ -155,7 +160,7 @@ class DBQuery:
     def assemble_raw(self, sql_response):
         objects = []
         for row in sql_response:
-            objects.append(self._obj(**row))
+            objects.append(self._obj.raw(**row))
         return objects
 
 
@@ -179,11 +184,8 @@ class DBGetQuery(DBQuery):
             else:
                 where_clause += f"{key} = ? AND "
 
-
         statement = f"SELECT * FROM {self._obj.__name__} {where_clause}"
-        print(kwargs)
 
-        print(args)
         args = tuple(args)
         response = self.execute_query(statement, args)
         return self.assemble_raw(response)
@@ -235,6 +237,7 @@ class DBObject(ABC):
     _db_mapping = {}
     _primary_key = None
     _file_path = None
+    get = None
 
     def __init__(self, **kwargs):
         d = self.__class__.__dict__
@@ -243,17 +246,40 @@ class DBObject(ABC):
             if type(value) is DBVariable:
                 self._db_mapping[key] = value
                 value.name = key
+                if value.primary_key:
+                    self._primary_key = value
+                # Ensure value is usable in DB.
+                setattr(self, key, None)
+
+    @classmethod
+    def raw(cls, **kwargs):
+        obj = cls.__new__(cls)
+        for key, value in kwargs.items():
+            setattr(obj, key, value)
 
     def save(self):
         keys, values = self._parse_columns()
         query = DBQuery(self.__class__, self._file_path)
         # Sanitization
         statement_values = query.get_value_string(len(values))
-        statement = f"INSERT OR IGNORE INTO {self.__class__.__name__} {str(keys)} VALUES({statement_values})"
+        statement = (f"INSERT OR REPLACE INTO "
+                     + f"{self.__class__.__name__} {str(keys)} VALUES({statement_values}) RETURNING *")
         args = []
         for v in values:
             args.append(getattr(self, v.name))
+            if v.foreign_key is not None:
+                attr = getattr(self, v.name)
+                if attr is not None and type(attr) is DBObject:
+                    attr.save()
         resp = query.execute_query(statement, args)
+        self._update_primary_key(resp)
+
+    def _update_primary_key(self, sql_row):
+        if len(sql_row) == 0:
+            return
+        if self._primary_key is not None and type(self._primary_key) is DBVariable:
+            new_pk_value = sql_row[0].get(self._primary_key.name)
+            setattr(self, self._primary_key.name, new_pk_value)
 
     def _parse_columns(self):
         orm_objects: dict[str, DBVariable] = {}
@@ -284,17 +310,3 @@ def get_db_mapping(t_class) -> dict[str, DBVariable]:
         if type(value) is DBVariable:
             orm_objects[key] = value
     return orm_objects
-
-
-class TestObject(DBObject):
-    test_string = DBVariable(ColumnType.TEXT)
-    test_float = DBVariable(ColumnType.REAL)
-    test_bool = DBVariable(ColumnType.INTEGER)
-    test_int = DBVariable(ColumnType.INTEGER)
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.test_string = "Test String"
-        self.test_float = 123.456
-        self.test_bool = False
-        self.test_int = 123
