@@ -1,10 +1,8 @@
-import os
 import sqlite3 as db
-import timeit
-from abc import abstractmethod, ABC
+from abc import ABC
 import logging
 
-import numpy
+# import numpy
 
 logger = logging.getLogger(__name__)
 
@@ -23,14 +21,14 @@ class ForeignKey:
         self.column = col
 
 
-class Column:
+class DBVariable:
     primary_key = False
     entry_type = "INTEGER"
 
-    def __init__(self, name, entry_type,
+    def __init__(self, entry_type,
                  foreign_key: ForeignKey = None, primary_key=False,
                  auto_inc=False, is_unique=False):
-        self.name = name
+        self.name = None
         self.entry_type = entry_type
         self.primary_key = primary_key
         self.auto_inc = auto_inc
@@ -39,7 +37,7 @@ class Column:
 
 
 class Table:
-    columns: list[Column] = []
+    columns: list[DBVariable] = []
 
     def __init__(self, name, columns: list):
         self.name = name
@@ -84,22 +82,6 @@ class Table:
         _disconnect_db(con, cur)
 
 
-def execute_query(db_file, statement, args=None):
-    con, cur = _connect_db(db_file)
-    if args is None:
-        logger.debug(f"Executing Statement: {statement}:")
-        sql_res = cur.execute(statement).fetchall()
-    else:
-        logger.debug(f"Executing Statement: {statement} with args {args}:")
-        sql_res = cur.execute(statement, args).fetchall()
-    resp = []
-    for row in sql_res:
-        resp.append({key: row[key] for key in row.keys()})
-    con.commit()
-    _disconnect_db(con, cur)
-    return resp
-
-
 def dict_from_row(row):
     return dict(zip(row.keys(), row))
 
@@ -116,72 +98,203 @@ def _disconnect_db(con, cur):
         con.close()
 
 
-class ORMVar:
-    def __init__(self, entry_type,
-                 foreign_key: ForeignKey = None, primary_key=False,
-                 auto_inc=False, is_unique=False):
-        self.name = None
-        self.entry_type = entry_type
-        self.primary_key = primary_key
-        self.auto_inc = auto_inc
-        self.is_unique = is_unique
-        self.foreign_key = foreign_key
-
-    def generate_column(self):
-        return Column(self.name, self.entry_type,
-                      foreign_key=self.foreign_key, primary_key=self.primary_key,
-                      auto_inc=self.auto_inc, is_unique=self.is_unique)
+def set_class(c):
+    c._class = c
+    return c
 
 
-class DBModel(ABC):
-    _db_mapping: dict[str, ORMVar] = {}
-    _primary_key = 1
+class DBQuery:
+    _db_filepath = None
+    _obj = None
 
-    def __init__(self):
-        d = get_db_mapping(self.__class__)
+    def __init__(self, obj, file_path):
+        self._obj = obj
+        self._db_filepath = file_path
+
+    def _connect_db(self):
+        self.con = db.connect(self._db_filepath)
+        self.con.row_factory = db.Row
+        self.cur = self.con.cursor()
+
+    def _disconnect_db(self):
+        self.cur.close()
+        self.con.close()
+
+    @staticmethod
+    def get_value_string(length):
+        value_string = ""
+        for i in range(0, length):
+            if i == length - 1:
+                value_string += "?"
+            else:
+                value_string += "?, "
+        return value_string
+
+    def execute_query(self, statement, args=None):
+        self._connect_db()
+        print(f"DEBUG EXECUTING STATEMENT: {statement} WITH ARGS {args}")
+        if args is None:
+            logger.debug(f"Executing Statement: {statement}:")
+            sql_res = self.cur.execute(statement).fetchall()
+        else:
+            logger.debug(f"Executing Statement: {statement} with args {args}:")
+            sql_res = self.cur.execute(statement, args).fetchall()
+        resp = []
+        for row in sql_res:
+            resp.append({key: row[key] for key in row.keys()})
+        self.con.commit()
+        _disconnect_db(self.con, self.cur)
+        return resp  # Dictionary assembled response
+
+    def raw_query(self, statement, args, suppress_warning=False):
+        if not suppress_warning:
+            logger.warning(f"Raw query executed for {self._obj.__name__}. To avoid errors"
+                           + f" use built in functions.")
+        return self.execute_query(statement, args)
+
+    def assemble_raw(self, sql_response):
+        objects = []
+        for row in sql_response:
+            objects.append(self._obj(**row))
+        return objects
+
+
+class DBGetQuery(DBQuery):
+    def __init__(self, obj, file_path):
+        super().__init__(obj, file_path)
+
+    def all(self):
+        statement = f"SELECT * FROM {self._obj.__name__}"
+        response = self.execute_query(statement)
+        return self.assemble_raw(response)
+
+    def where(self, **kwargs):
+        where_clause = "WHERE "
+        args = []
+        last_key = list(kwargs)[-1]
+        for key, value in kwargs.items():
+            args.append(value)
+            if key == last_key:
+                where_clause += f"{key} = ? "
+            else:
+                where_clause += f"{key} = ? AND "
+
+
+        statement = f"SELECT * FROM {self._obj.__name__} {where_clause}"
+        print(kwargs)
+
+        print(args)
+        args = tuple(args)
+        response = self.execute_query(statement, args)
+        return self.assemble_raw(response)
+
+
+class StringVariable(DBVariable):
+    def __init__(self, entry_type, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
+        super().__init__(entry_type, foreign_key, primary_key, auto_inc, is_unique)
+
+
+class IntegerVariable(DBVariable):
+    def __init__(self, entry_type, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
+        super().__init__(entry_type, foreign_key, primary_key, auto_inc, is_unique)
+
+
+class BoolVariable(DBVariable):
+    def __init__(self, entry_type, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
+        super().__init__(entry_type, foreign_key, primary_key, auto_inc, is_unique)
+
+    @staticmethod
+    def convert_bool(self, b: bool):
+        return 1 if b else 0
+
+
+class BlobVariable(DBVariable):
+    def __init__(self, entry_type, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
+        super().__init__(entry_type, foreign_key, primary_key, auto_inc, is_unique)
+
+
+class FileVariable(DBVariable):
+    def __init__(self, entry_type, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
+        super().__init__(entry_type, foreign_key, primary_key, auto_inc, is_unique)
+
+    def get_file_data(self):
+        pass
+
+    def get_numpy_data(self):
+        pass
+
+    def save_file_data(self):
+        pass
+
+    def save_numpy_data(self):
+        pass
+
+
+class DBObject(ABC):
+    _class = None
+    _db_mapping = {}
+    _primary_key = None
+    _file_path = None
+
+    def __init__(self, **kwargs):
+        d = self.__class__.__dict__
         for key, value in d.items():
-            # Store configuration for later use
-            value.name = key
-            self._db_mapping[key] = value
-            # Reset data to be usable by subclass
-            setattr(self, key, None)
 
-    def create(self):
-        pass
+            if type(value) is DBVariable:
+                self._db_mapping[key] = value
+                value.name = key
 
-    def retrieve(self):
-        pass
+    def save(self):
+        keys, values = self._parse_columns()
+        query = DBQuery(self.__class__, self._file_path)
+        # Sanitization
+        statement_values = query.get_value_string(len(values))
+        statement = f"INSERT OR IGNORE INTO {self.__class__.__name__} {str(keys)} VALUES({statement_values})"
+        args = []
+        for v in values:
+            args.append(getattr(self, v.name))
+        resp = query.execute_query(statement, args)
 
-    def update(self):
-        pass
+    def _parse_columns(self):
+        orm_objects: dict[str, DBVariable] = {}
+        for key, value in self._db_mapping.items():
+            if type(value) is DBVariable:
+                orm_objects[key] = value
+        return tuple(orm_objects.keys()), tuple(orm_objects.values())
 
-    def delete(self):
-        pass
+    @classmethod
+    def create_table(cls):
+        t_class = cls._class
+        d = get_db_mapping(t_class)
+        cols = []
+        for key, value in d.items():
+            if value is not None:
+                if value.name is None:
+                    value.name = key
+                cols.append(value)
 
-
-class ObjectDatabase:
-    def __init__(self, db_file, objects):
-        self.db_file = db_file
-        self.objects: list = objects
-
-    def create_sqlite_table(self):
-        for t_class in self.objects:
-            d = get_db_mapping(t_class)
-            cols = []
-            for key, value in d.items():
-                if value is not None:
-                    if value.name is None:
-                        value.name = key
-                    cols.append(value.generate_column())
-
-            table = Table(t_class.__name__, cols)
-            table.create_table(self.db_file)
+        table = Table(t_class.__name__, cols)
+        table.create_table(cls._file_path)
 
 
-def get_db_mapping(t_class) -> dict[str, ORMVar]:
-    orm_objects: dict[str, ORMVar] = {}
+def get_db_mapping(t_class) -> dict[str, DBVariable]:
+    orm_objects: dict[str, DBVariable] = {}
     d = t_class.__dict__
     for key, value in d.items():
-        if type(value) is ORMVar:
+        if type(value) is DBVariable:
             orm_objects[key] = value
     return orm_objects
+
+
+class TestObject(DBObject):
+    test_string = DBVariable(ColumnType.TEXT)
+    test_float = DBVariable(ColumnType.REAL)
+    test_bool = DBVariable(ColumnType.INTEGER)
+    test_int = DBVariable(ColumnType.INTEGER)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.test_string = "Test String"
+        self.test_float = 123.456
+        self.test_bool = False
+        self.test_int = 123
