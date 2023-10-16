@@ -4,7 +4,6 @@ DATA_BASE_FILES = {}
 
 
 def initialize_orm(db_path, classes=None):
-    db_path = "C:\\Users\\Cactus\\Documents\\test.db"
     global DATA_BASE_FILES
     filename = db_path.split('\\')[-1]
     db_name = filename.split('.')[0]
