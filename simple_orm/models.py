@@ -17,7 +17,7 @@ class ColumnType:
 
 class ForeignKey:
     def __init__(self, col, obj_class):
-        self.column = col
+        self.fk_attribute = col
         self.obj_class = obj_class
         self.table = obj_class.__name__
 
@@ -65,7 +65,7 @@ class Table:
             if col.foreign_key is not None:
                 foreign_keys += f", FOREIGN KEY({col.name})" \
                                 + f" REFERENCES {col.foreign_key.table}" \
-                                + f"({col.foreign_key.column})"
+                                + f"({col.foreign_key.fk_attribute})"
             if i != len(self.columns) - 1:
                 statement += ", "
 
@@ -112,6 +112,12 @@ class DBQuery:
         self._obj = obj
         self._db_filepath = file_path
 
+    def get_filepath(self):
+        return self._db_filepath
+
+    def get_object(self):
+        return self._obj
+
     def _connect_db(self):
         self.con = db.connect(self._db_filepath)
         self.con.row_factory = db.Row
@@ -134,7 +140,6 @@ class DBQuery:
     def execute_query(self, statement, args=None):
         self._connect_db()
         try:
-            print(f"DEBUG EXECUTING STATEMENT: {statement} WITH ARGS {args}")
             if args is None:
                 logger.debug(f"Executing Statement: {statement}:")
                 sql_res = self.cur.execute(statement).fetchall()
@@ -190,6 +195,16 @@ class DBGetQuery(DBQuery):
         response = self.execute_query(statement, args)
         return self.assemble_raw(response)
 
+    def by_primary_key(self, pk_value):
+        logger.debug(f"Getting object {self.get_object()} by pk: {pk_value}")
+        mapping = get_db_mapping(self.get_object())
+        for key, value in mapping.items():
+            if value.primary_key:
+                pk = value.name
+                obj = self.where(**{pk: pk_value})
+                print(obj)
+                return obj
+
 
 class StringVariable(DBVariable):
     def __init__(self, entry_type, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
@@ -233,29 +248,33 @@ class FileVariable(DBVariable):
 
 
 class DBObject(ABC):
-    _class = None
-    _db_mapping = {}
     _primary_key = None
     _file_path = None
     get = None
 
     def __init__(self, **kwargs):
-        d = self.__class__.__dict__
-        for key, value in d.items():
-
+        mapping = get_db_mapping(self.__class__)
+        for key, value in mapping.items():
             if type(value) is DBVariable:
-                self._db_mapping[key] = value
-                value.name = key
                 if value.primary_key:
                     self._primary_key = value
+
                 # Ensure value is usable in DB.
                 setattr(self, key, None)
 
     @classmethod
     def raw(cls, **kwargs):
         obj = cls.__new__(cls)
+        mapping = get_db_mapping(obj.__class__)
         for key, value in kwargs.items():
-            setattr(obj, key, value)
+            db_var = mapping.get(key)
+            if db_var.foreign_key is not None:
+                _class: DBObject = db_var.foreign_key.obj_class
+                fk_obj = _class.get.by_primary_key(value)
+                setattr(obj, key, fk_obj)
+            else:
+                setattr(obj, key, value)
+        return obj
 
     def save(self):
         keys, values = self._parse_columns()
@@ -265,14 +284,33 @@ class DBObject(ABC):
         statement = (f"INSERT OR REPLACE INTO "
                      + f"{self.__class__.__name__} {str(keys)} VALUES({statement_values}) RETURNING *")
         args = []
+        logger.debug(f"Saving object {self.__class__.__name__} with values: \n{values}")
         for v in values:
-            args.append(getattr(self, v.name))
             if v.foreign_key is not None:
-                attr = getattr(self, v.name)
-                if attr is not None and type(attr) is DBObject:
-                    attr.save()
+                fk: ForeignKey = v.foreign_key
+                fk_object = getattr(self, v.name)
+                if fk_object is not None:
+                    fk_object.save()
+                    fk_pk = fk_object.get_primary_key()
+                    fk_pk_value = getattr(fk_object, fk_pk.name)
+                    args.append(fk_pk_value)
+                else:
+                    args.append(None)
+            else:
+                args.append(getattr(self, v.name))
+
+
         resp = query.execute_query(statement, args)
         self._update_primary_key(resp)
+        logger.debug(f"{self.__class__.__name__} saved successfully")
+
+    def get_primary_key(self):
+        if self._primary_key is None:
+            mapping = get_db_mapping(self.__class__)
+            for key, value in mapping:
+                if value.primary_key:
+                    self._primary_key = value
+        return self._primary_key
 
     def _update_primary_key(self, sql_row):
         if len(sql_row) == 0:
@@ -282,18 +320,23 @@ class DBObject(ABC):
             setattr(self, self._primary_key.name, new_pk_value)
 
     def _parse_columns(self):
+        logger.debug(f"Parsing variables for class {self.__class__.__name__}")
         orm_objects: dict[str, DBVariable] = {}
-        for key, value in self._db_mapping.items():
+        mapping = get_db_mapping(self.__class__)
+        for key, value in mapping.items():
             if type(value) is DBVariable:
                 orm_objects[key] = value
+        logger.debug(f"Found keys for {self.__class__.__name__}: {orm_objects.keys()}")
+        logger.debug(f"Found values for {self.__class__.__name__}: {orm_objects.values()}")
         return tuple(orm_objects.keys()), tuple(orm_objects.values())
 
     @classmethod
     def create_table(cls):
-        t_class = cls._class
-        d = get_db_mapping(t_class)
+        t_class = cls.__new__(cls).__class__
+        logger.debug(f"Creating table for {t_class}")
+        mapping = get_db_mapping(t_class)
         cols = []
-        for key, value in d.items():
+        for key, value in mapping.items():
             if value is not None:
                 if value.name is None:
                     value.name = key
@@ -304,9 +347,14 @@ class DBObject(ABC):
 
 
 def get_db_mapping(t_class) -> dict[str, DBVariable]:
-    orm_objects: dict[str, DBVariable] = {}
+    logger.debug(f"Getting db mapping for class: {t_class}")
     d = t_class.__dict__
+    mapping = {}
     for key, value in d.items():
         if type(value) is DBVariable:
-            orm_objects[key] = value
-    return orm_objects
+            mapping[key] = value
+    return mapping
+
+
+# Update get_db_mapping to generic that doesn't update DB mapping and instead just fetches the key value pairs
+# in what used to be DB mapping
