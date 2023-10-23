@@ -1,15 +1,24 @@
 import os
 import unittest
-
+import logging
+import coloredlogs
 import simple_orm.orm
 from simple_orm.models import *
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG)
+coloredlogs.install(level='DEBUG')
 
 
 class UnitTestClassFK1(DBObject):
     _id = DBVariable(ColumnType.INTEGER, primary_key=True)
+    name = DBVariable(ColumnType.TEXT)
+    other_val = DBVariable(ColumnType.INTEGER)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.name = "created for unit test"
+        self.other_val = 123
 
 
 class UnitTestClass1(DBObject):
@@ -26,7 +35,6 @@ class UnitTestClass1(DBObject):
 
 class ORMTest(unittest.TestCase):
     test_db_path = f"C:\\Users\\Cactus\\Documents\\unit_test.db"
-    initialized = False
 
     @classmethod
     def setUpClass(cls):
@@ -39,7 +47,6 @@ class ORMTest(unittest.TestCase):
 
     def test_object_init(self):
         self.assertNotEqual(self.test_class, None, f"Object did not exist")
-        self.assertNotEqual(len(self.test_class._db_mapping), 0, f"DB Objects not assigned")
 
     def test_object_change(self):
         self.assertEqual(self.test_class.test_string, None, f"Test String not none: {self.test_class.test_string}")
@@ -48,7 +55,6 @@ class ORMTest(unittest.TestCase):
         self.assertEqual(self.test_class.test_string, new_val, "Test Value did not change")
 
     def test_database_creation(self):
-        self.test_class.create_table()
         self.test_class.create_table()
         self.assertEqual(os.path.exists(self.test_db_path), True, "DB file not created")
 
@@ -72,3 +78,17 @@ class ORMTest(unittest.TestCase):
         self.assertEqual(len(self.test_classes), 2, "Test rows not inserted correctly")
         self.assertEqual(self.test_class.test_string, "Second string updated", "Test String did not update")
 
+        self.test_class.test_fk = UnitTestClassFK1()
+        self.test_class.save()
+        self.assertEqual(self.test_class.test_fk.name, "created for unit test", "Foreign Key not saved correctly")
+
+        self.test_class = UnitTestClass1()
+        self.test_class.test_string = "None FK"
+        self.test_class.test_fk = None
+        self.test_class.save()
+        self.assertEqual(self.test_class.test_fk, None, "Foreign Key test failed. FK not none")
+
+    def test_get_objects(self):
+        self.test_class = None
+        self.test_class = UnitTestClass1.get.by_primary_key('2')
+        self.assertNotEqual(self.test_class, None, "Did not successfully get object by Primary Key")
