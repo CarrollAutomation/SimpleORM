@@ -34,7 +34,7 @@ class UnitTestClass1(DBObject):
 
 
 class ORMTest(unittest.TestCase):
-    test_db_path = f"C:\\Users\\Cactus\\Documents\\unit_test.db"
+    test_db_path = f"{os.getcwd()}\\unit_test.db"
 
     @classmethod
     def setUpClass(cls):
