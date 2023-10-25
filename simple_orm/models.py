@@ -247,6 +247,12 @@ class FileVariable(DBVariable):
         pass
 
 
+class ListVariable(DBVariable):
+    def __init__(self, entry_type, list_object, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
+        super().__init__(entry_type, foreign_key, primary_key, auto_inc, is_unique)
+        self.list_object_class = list_object
+
+
 class DBObject(ABC):
     _primary_key = None
     _file_path = None
@@ -286,6 +292,7 @@ class DBObject(ABC):
         args = []
         logger.debug(f"Saving object {self.__class__.__name__} with values: \n{values}")
         for v in values:
+
             if v.foreign_key is not None:
                 fk: ForeignKey = v.foreign_key
                 fk_object = getattr(self, v.name)
@@ -332,6 +339,7 @@ class DBObject(ABC):
 
     @classmethod
     def create_table(cls):
+        links = []
         t_class = cls.__new__(cls).__class__
         logger.debug(f"Creating table for {t_class}")
         mapping = get_db_mapping(t_class)
@@ -340,10 +348,24 @@ class DBObject(ABC):
             if value is not None:
                 if value.name is None:
                     value.name = key
+                if type(value) is ListVariable:
+                    _obj = value.list_object_class.create_table()
+                    links.append([value, t_class, value.list_object_class])
                 cols.append(value)
 
         table = Table(t_class.__name__, cols)
         table.create_table(cls._file_path)
+
+        for link in links:
+            col1 = IntegerVariable(link[0].entry_type, primary_key=True,
+                                   foreign_key=ForeignKey(link[0].name, link[1]))
+            col2 = IntegerVariable(ColumnType.INTEGER,
+                                   foreign_key=ForeignKey('_id', link[2]))
+            link_table = Table(f"{link[2].__name__}_link", (col1, col2))
+            link_table.create_table(cls._file_path)
+
+    def _create_link(self):
+        pass
 
 
 def get_db_mapping(t_class) -> dict[str, DBVariable]:
