@@ -18,4 +18,3 @@ def initialize_orm(db_path, classes=None):
         _class.get = DBGetQuery(_class, DATA_BASE_FILES[db_name])
         _class._class = _class
         _class.create_table()
-

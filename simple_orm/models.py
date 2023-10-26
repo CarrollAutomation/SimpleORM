@@ -63,6 +63,7 @@ class Table:
             if col.is_unique:
                 statement += " UNIQUE"
             if col.foreign_key is not None:
+                print(col.__dict__)
                 foreign_keys += f", FOREIGN KEY({col.name})" \
                                 + f" REFERENCES {col.foreign_key.table}" \
                                 + f"({col.foreign_key.fk_attribute})"
@@ -76,6 +77,7 @@ class Table:
 
     def create_table(self, database_file):
         con, cur = _connect_db(database_file)
+        logger.debug(f"Table creation for class {self.name}")
         statement = self._assemble_statement()
         logger.info(f"Executing Statement: {statement}")
         cur.execute(statement)
@@ -207,18 +209,18 @@ class DBGetQuery(DBQuery):
 
 
 class StringVariable(DBVariable):
-    def __init__(self, entry_type, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
-        super().__init__(entry_type, foreign_key, primary_key, auto_inc, is_unique)
+    def __init__(self, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
+        super().__init__(ColumnType.TEXT, foreign_key, primary_key, auto_inc, is_unique)
 
 
 class IntegerVariable(DBVariable):
-    def __init__(self, entry_type, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
-        super().__init__(entry_type, foreign_key, primary_key, auto_inc, is_unique)
+    def __init__(self, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
+        super().__init__(ColumnType.INTEGER, foreign_key, primary_key, auto_inc, is_unique)
 
 
 class BoolVariable(DBVariable):
-    def __init__(self, entry_type, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
-        super().__init__(entry_type, foreign_key, primary_key, auto_inc, is_unique)
+    def __init__(self, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
+        super().__init__(ColumnType.INTEGER, foreign_key, primary_key, auto_inc, is_unique)
 
     @staticmethod
     def convert_bool(self, b: bool):
@@ -226,13 +228,13 @@ class BoolVariable(DBVariable):
 
 
 class BlobVariable(DBVariable):
-    def __init__(self, entry_type, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
-        super().__init__(entry_type, foreign_key, primary_key, auto_inc, is_unique)
+    def __init__(self, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
+        super().__init__(ColumnType.BLOB, foreign_key, primary_key, auto_inc, is_unique)
 
 
 class FileVariable(DBVariable):
-    def __init__(self, entry_type, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
-        super().__init__(entry_type, foreign_key, primary_key, auto_inc, is_unique)
+    def __init__(self, foreign_key: ForeignKey = None, primary_key=False, auto_inc=False, is_unique=False):
+        super().__init__(ColumnType.INTEGER, foreign_key, primary_key, auto_inc, is_unique)
 
     def get_file_data(self):
         pass
@@ -357,10 +359,12 @@ class DBObject(ABC):
         table.create_table(cls._file_path)
 
         for link in links:
-            col1 = IntegerVariable(link[0].entry_type, primary_key=True,
+            col1 = IntegerVariable(primary_key=True,
                                    foreign_key=ForeignKey(link[0].name, link[1]))
-            col2 = IntegerVariable(ColumnType.INTEGER,
+            col1.name = "link_id"
+            col2 = IntegerVariable(
                                    foreign_key=ForeignKey('_id', link[2]))
+            col2.name = "child_id"
             link_table = Table(f"{link[2].__name__}_link", (col1, col2))
             link_table.create_table(cls._file_path)
 
@@ -373,10 +377,6 @@ def get_db_mapping(t_class) -> dict[str, DBVariable]:
     d = t_class.__dict__
     mapping = {}
     for key, value in d.items():
-        if type(value) is DBVariable:
+        if issubclass(value.__class__, DBVariable):
             mapping[key] = value
     return mapping
-
-
-# Update get_db_mapping to generic that doesn't update DB mapping and instead just fetches the key value pairs
-# in what used to be DB mapping
