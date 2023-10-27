@@ -12,23 +12,17 @@ logging.basicConfig(level=logging.DEBUG)
 coloredlogs.install(level='DEBUG')
 
 
-class UnitTestClass1(DBObject):
-    _id = DBVariable(ColumnType.INTEGER, primary_key=True)
-    test_string = DBVariable(ColumnType.TEXT)
-    test_float = DBVariable(ColumnType.REAL)
-    test_bool = DBVariable(ColumnType.INTEGER)
-    test_int = DBVariable(ColumnType.INTEGER)
-    test_fk = DBVariable(ColumnType.INTEGER, ForeignKey("test_fk", UnitTestClassFK1))
-
-    def __init__(self, **kwargs):
-        super().__init__()
-
-
 class ORMTest(unittest.TestCase):
     test_db_path = f"{os.getcwd()}\\unit_test.db"
 
     @classmethod
     def setUpClass(cls):
+        if os.path.exists(cls.test_db_path):
+            os.remove(cls.test_db_path)
+        simple_orm.orm.initialize_orm(cls.test_db_path)
+
+    @classmethod
+    def tearDownClass(cls):
         if os.path.exists(cls.test_db_path):
             os.remove(cls.test_db_path)
         simple_orm.orm.initialize_orm(cls.test_db_path)
